@@ -3,23 +3,29 @@
 namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Storage;
 
 class ProfileController extends Controller
 {
     public function update(Request $request)
     {
-        // Ambil user login
         $user = auth()->user();
 
         /*
         |--------------------------------------------------------------------------
-        | VALIDASI
+        | VALIDASI EDIT PROFIL & AVATAR
         |--------------------------------------------------------------------------
         */
         $request->validate([
-            'full_name' => 'required',
-            'avatar' => 'nullable|image|mimes:jpg,jpeg,png,webp|max:2048'
+            'full_name' => ['required', 'regex:/^[A-Za-z\s]+$/'],
+            'avatar' => ['nullable', 'image', 'mimes:jpg,jpeg,png,webp', 'max:2048']
+        ], [
+            'full_name.required' => 'Nama lengkap wajib diisi',
+            'full_name.regex' => 'Gunakan nama yang sebenarnya',
+            'avatar.image' => 'File harus berupa gambar',
+            'avatar.mimes' => 'Format file harus JPG, JPEG, PNG, atau WEBP',
+            'avatar.max' => 'Ukuran gambar maksimal 2MB'
         ]);
 
         /*
@@ -36,29 +42,58 @@ class ProfileController extends Controller
         */
         if ($request->hasFile('avatar')) {
 
-            // hapus avatar lama (kalau ada)
+            // Hapus avatar lama jika ada
             if ($user->avatar_url) {
                 Storage::delete('public/avatars/' . $user->avatar_url);
             }
 
-            // simpan file ke storage
             $file = $request->file('avatar');
-
             $filename = time() . '.' . $file->getClientOriginalExtension();
-
             $file->storeAs('public/avatars', $filename);
 
-            // simpan ke database
+            // Simpan ke kolom database avatar_url
             $user->avatar_url = $filename;
         }
 
-        /*
-        |--------------------------------------------------------------------------
-        | SIMPAN KE DATABASE
-        |--------------------------------------------------------------------------
-        */
         $user->save();
 
         return back()->with('success', 'Profil berhasil diperbarui');
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | UPDATE PASSWORD
+    |--------------------------------------------------------------------------
+    */
+    public function updatePassword(Request $request)
+    {
+        $user = auth()->user();
+
+        $request->validate([
+            'current_password' => ['required'],
+            'password' => [
+                'required',
+                'min:8',
+                'regex:/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).+$/',
+                'confirmed'
+            ],
+        ], [
+            'current_password.required' => 'Password saat ini wajib diisi',
+            'password.required' => 'Password baru wajib diisi',
+            'password.min' => 'Password minimal 8 karakter',
+            'password.regex' => 'Password harus ada huruf besar, kecil, dan angka',
+            'password.confirmed' => 'Konfirmasi password tidak cocok',
+        ]);
+
+        // Cek apakah password lama sesuai
+        if (!Hash::check($request->current_password, $user->password_hash)) {
+            return back()->withErrors(['current_password' => 'Password saat ini tidak sesuai']);
+        }
+
+        // Update ke password baru
+        $user->password_hash = Hash::make($request->password);
+        $user->save();
+
+        return back()->with('success', 'Password berhasil diubah');
     }
 }

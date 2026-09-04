@@ -9,6 +9,7 @@ use App\Http\Controllers\VoteController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\ListEventController;
 use App\Http\Controllers\ScanController;
+use App\Http\Controllers\TopsisController;
 
 Route::get('/', function () {return view('home');})->name('home');
 
@@ -24,11 +25,16 @@ Route::get('/list-event', [ListEventController::class, 'listEvent'])->name('list
 Route::get('/dashboard', [DashboardController::class, 'index'])->middleware('auth')
     ->name('dashboard');
 
-Route::get('/edit-profile', function () {return view('edit-profile');})->name('edit.profile');
-
-Route::get('/profile', function () {return view('profile');})->name('profile')->middleware('auth');
-
-Route::post('/profile/update', [ProfileController::class, 'update'])->name('profile.update')->middleware('auth');
+Route::middleware('auth')->group(function () {
+    Route::get('/edit-profile', function () { return view('edit-profile'); })->name('edit.profile');
+    Route::get('/profile', function () { return view('profile'); })->name('profile');
+    
+    // Process update nama & foto
+    Route::post('/profile/update', [ProfileController::class, 'update'])->name('profile.update');
+    
+    // Process update password (BARU)
+    Route::post('/profile/password', [ProfileController::class, 'updatePassword'])->name('profile.password');
+});
 
 Route::get('/create-event', [EventController::class, 'create'])->name('create.event')->middleware('auth');
 Route::post('/create-event', [EventController::class, 'store'])->name('store.event')->middleware('auth');
@@ -93,3 +99,4 @@ Route::post('/rate-candidate/submit', [ScanController::class, 'submitRating'])->
 // Hasil (TOPSIS / jumlah vote)
 Route::get('/event-result', [ScanController::class, 'eventResult'])->name('event.result.show');
     
+Route::get('/event/topsis', [TopsisController::class, 'result'])->name('event.topsis');

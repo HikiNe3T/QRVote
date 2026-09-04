@@ -449,5 +449,38 @@ class EventController extends Controller
         return $pdf->download('lanyard-' . str()->slug($event->name) . '.pdf');
     }
 
+public function index()
+{
+    $userId = Auth::id();
 
+    // 1. Hitung Event Aktif milik user
+    $activeEventsCount = Event::where('creator_id', $userId)
+        ->where('status', 'active')
+        ->count();
+
+    // 2. Hitung Total Peserta dari semua event milik user
+    $totalParticipantsCount = Participant::whereHas('event', function ($query) use ($userId) {
+        $query->where('creator_id', $userId);
+    })->count();
+
+    // 3. Hitung Total Vote Riil dari peserta yang sudah voting
+    $totalVotesCount = Participant::whereHas('event', function ($query) use ($userId) {
+        $query->where('creator_id', $userId);
+    })->where('has_voted', 1)->count();
+
+    // 4. Load event milik user beserta relasi participant untuk menghitung vote per event
+    $events = Event::where('creator_id', $userId)
+        ->withCount(['participants as voted_count' => function ($query) {
+            $query->where('has_voted', 1);
+        }])
+        ->latest()
+        ->get();
+
+    return view('dashboard', compact(
+        'activeEventsCount',
+        'totalParticipantsCount',
+        'totalVotesCount',
+        'events'
+    ));
+}
 }

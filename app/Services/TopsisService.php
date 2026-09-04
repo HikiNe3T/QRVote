@@ -2,166 +2,178 @@
 
 namespace App\Services;
 
-use Illuminate\Support\Facades\DB;
-
+/**
+ * Pure PHP implementation of the TOPSIS (Technique for Order
+ * Preference by Similarity to Ideal Solution) algorithm.
+ *
+ * Input  : decision matrix (m alternatives x n criteria),
+ *          weights (length n, summing to 1),
+ *          benefit flags (length n, true = benefit / larger-is-better).
+ * Output : closeness coefficient + ranking per alternative.
+ */
 class TopsisService
 {
     /**
-     * Hitung ranking kandidat dengan metode TOPSIS.
+     * Run TOPSIS over a decision matrix.
      *
-     * Alternatif  = kandidat
-     * Kriteria    = categories (semua benefit / makin besar makin baik)
-     * Nilai x_ij  = rata-rata skor yang diberikan seluruh voter
-     *               untuk kandidat i pada kategori j
-     *
-     * @return array<int, array{candidate_id:string, name:string, number:int,
-     *               scores:array<string,float>, dplus:float, dminus:float,
-     *               preference:float, rank:int}>
+     * @param array  $matrix  Rows = alternatives, cols = criteria.
+     *                        $matrix[i][j] = numeric value.
+     * @param array  $weights Normalized weights, length = n criteria.
+     * @param array  $benefit Boolean per criterion: true = benefit,
+     *                        false = cost (smaller-is-better).
+     * @return array {
+     *     @var array  $closeness   Closeness coefficient per alternative (0..1).
+     *     @var array  $rank        Rank per alternative (1 = best).
+     *     @var array  $dPlus       Separation from ideal-positive.
+     *     @var array  $dMinus      Separation from ideal-negative.
+     *     @var array  $normalized  Normalized matrix.
+     *     @var array  $weighted    Weighted normalized matrix.
+     *     @var array  $idealPlus   Ideal-positive solution per criterion.
+     *     @var array  $idealMinus  Ideal-negative solution per criterion.
+     * }
      */
-    public function rank(string $eventId): array
+    public static function calculate(array $matrix, array $weights, array $benefit): array
     {
-        $categories = DB::table('categories')
-            ->where('event_id', $eventId)
-            ->orderBy('created_at')
-            ->get();
+        $m = count($matrix);          // alternatives
+        $n = count($weights);         // criteria
 
-        $candidates = DB::table('candidates')
-            ->where('event_id', $eventId)
-            ->orderBy('number')
-            ->get();
-
-        if ($categories->isEmpty() || $candidates->isEmpty()) {
-            return [];
+        if ($m === 0 || $n === 0) {
+            return self::emptyResult($n);
         }
 
-        // 1) Matriks keputusan: rata-rata skor per kandidat per kategori
-        $rows = DB::table('votes as v')
-            ->join('ratings as r', 'r.vote_id', '=', 'v.id')
-            ->where('v.event_id', $eventId)
-            ->groupBy('v.candidate_id', 'r.category_id')
-            ->select('v.candidate_id', 'r.category_id', DB::raw('AVG(r.score) as avg_score'))
-            ->get();
+        // -----------------------------------------------------------
+        // Step 1 — Vector normalization:  r_ij = x_ij / sqrt(sum x^2)
+        // -----------------------------------------------------------
+        $normalized = array_fill(0, $m, array_fill(0, $n, 0.0));
 
-        $matrix = [];
-        foreach ($candidates as $c) {
-            foreach ($categories as $cat) {
-                $matrix[$c->id][$cat->id] = 0.0;
+        for ($j = 0; $j < $n; $j++) {
+            $sumSquares = 0.0;
+            for ($i = 0; $i < $m; $i++) {
+                $val = (float) ($matrix[$i][$j] ?? 0);
+                $sumSquares += $val * $val;
             }
-        }
-        foreach ($rows as $row) {
-            if (isset($matrix[$row->candidate_id][$row->category_id])) {
-                $matrix[$row->candidate_id][$row->category_id] = (float) $row->avg_score;
+            $denom = sqrt($sumSquares);
+            for ($i = 0; $i < $m; $i++) {
+                $val = (float) ($matrix[$i][$j] ?? 0);
+                $normalized[$i][$j] = $denom > 0 ? $val / $denom : 0.0;
             }
         }
 
-        // 2) Bobot ternormalisasi (total = 1). Kalau semua bobot 0 -> bobot sama.
-        $totalWeight = 0.0;
-        foreach ($categories as $cat) {
-            $totalWeight += (float) $cat->weight;
-        }
-        $weights = [];
-        foreach ($categories as $cat) {
-            $weights[$cat->id] = $totalWeight > 0
-                ? ((float) $cat->weight / $totalWeight)
-                : (1 / max(1, $categories->count()));
-        }
+        // -----------------------------------------------------------
+        // Step 2 — Apply weights:  v_ij = w_j * r_ij
+        // -----------------------------------------------------------
+        $weighted = array_fill(0, $m, array_fill(0, $n, 0.0));
 
-        // 3) Normalisasi vektor: r_ij = x_ij / sqrt(sum(x_ij^2))
-        $divisor = [];
-        foreach ($categories as $cat) {
-            $sum = 0.0;
-            foreach ($candidates as $c) {
-                $sum += pow($matrix[$c->id][$cat->id], 2);
-            }
-            $divisor[$cat->id] = sqrt($sum);
-        }
-
-        // 4) Matriks terbobot y_ij = w_j * r_ij
-        $weighted = [];
-        foreach ($candidates as $c) {
-            foreach ($categories as $cat) {
-                $r = $divisor[$cat->id] > 0
-                    ? $matrix[$c->id][$cat->id] / $divisor[$cat->id]
-                    : 0.0;
-                $weighted[$c->id][$cat->id] = $weights[$cat->id] * $r;
+        for ($i = 0; $i < $m; $i++) {
+            for ($j = 0; $j < $n; $j++) {
+                $weighted[$i][$j] = $normalized[$i][$j] * (float) $weights[$j];
             }
         }
 
-        // 5) Solusi ideal positif (A+) & negatif (A-) — semua kriteria benefit
-        $aPlus = $aMinus = [];
-        foreach ($categories as $cat) {
-            $col = [];
-            foreach ($candidates as $c) {
-                $col[] = $weighted[$c->id][$cat->id];
+        // -----------------------------------------------------------
+        // Step 3 — Ideal positive (A+) & ideal negative (A-)
+        // -----------------------------------------------------------
+        $idealPlus  = array_fill(0, $n, 0.0);
+        $idealMinus = array_fill(0, $n, 0.0);
+
+        for ($j = 0; $j < $n; $j++) {
+            $column = array_column($weighted, $j);
+
+            if (empty($column)) {
+                $idealPlus[$j]  = 0.0;
+                $idealMinus[$j] = 0.0;
+                continue;
             }
-            $aPlus[$cat->id]  = max($col);
-            $aMinus[$cat->id] = min($col);
-        }
 
-        // 6) Jarak Euclidean + nilai preferensi
-        $result = [];
-        foreach ($candidates as $c) {
-            $dPlus = $dMinus = 0.0;
-            foreach ($categories as $cat) {
-                $dPlus  += pow($weighted[$c->id][$cat->id] - $aPlus[$cat->id], 2);
-                $dMinus += pow($weighted[$c->id][$cat->id] - $aMinus[$cat->id], 2);
+            $max = max($column);
+            $min = min($column);
+
+            if ($benefit[$j] ?? true) {
+                $idealPlus[$j]  = $max;   // benefit: best = max
+                $idealMinus[$j] = $min;   // worst  = min
+            } else {
+                $idealPlus[$j]  = $min;   // cost: best = min
+                $idealMinus[$j] = $max;   // worst  = max
             }
-            $dPlus  = sqrt($dPlus);
-            $dMinus = sqrt($dMinus);
-
-            $result[] = [
-                'candidate_id' => $c->id,
-                'name'         => $c->name,
-                'number'       => (int) $c->number,
-                'scores'       => $matrix[$c->id],
-                'dplus'        => round($dPlus, 6),
-                'dminus'       => round($dMinus, 6),
-                'preference'   => ($dPlus + $dMinus) > 0
-                    ? round($dMinus / ($dPlus + $dMinus), 6)
-                    : 0.0,
-            ];
         }
 
-        // 7) Ranking
-        usort($result, fn ($a, $b) => $b['preference'] <=> $a['preference']);
-        foreach ($result as $i => &$r) {
-            $r['rank'] = $i + 1;
+        // -----------------------------------------------------------
+        // Step 4 — Separation measures D+ and D-
+        // -----------------------------------------------------------
+        $dPlus  = array_fill(0, $m, 0.0);
+        $dMinus = array_fill(0, $m, 0.0);
+
+        for ($i = 0; $i < $m; $i++) {
+            $sumPlus  = 0.0;
+            $sumMinus = 0.0;
+
+            for ($j = 0; $j < $n; $j++) {
+                $sumPlus  += pow($weighted[$i][$j] - $idealPlus[$j], 2);
+                $sumMinus += pow($weighted[$i][$j] - $idealMinus[$j], 2);
+            }
+
+            $dPlus[$i]  = sqrt($sumPlus);
+            $dMinus[$i] = sqrt($sumMinus);
         }
 
-        return $result;
+        // -----------------------------------------------------------
+        // Step 5 — Closeness coefficient: C_i = D- / (D+ + D-)
+        // -----------------------------------------------------------
+        $closeness = array_fill(0, $m, 0.0);
+
+        for ($i = 0; $i < $m; $i++) {
+            $denom = $dPlus[$i] + $dMinus[$i];
+            $closeness[$i] = $denom > 0 ? $dMinus[$i] / $denom : 0.0;
+        }
+
+        // -----------------------------------------------------------
+        // Step 6 — Rank (1 = best, highest closeness)
+        // -----------------------------------------------------------
+        $rank = self::rankDescending($closeness);
+
+        return [
+            'closeness'  => $closeness,
+            'rank'       => $rank,
+            'dPlus'      => $dPlus,
+            'dMinus'     => $dMinus,
+            'normalized' => $normalized,
+            'weighted'   => $weighted,
+            'idealPlus'  => $idealPlus,
+            'idealMinus' => $idealMinus,
+        ];
     }
 
-    /** Pemenang per kategori (skor rata-rata tertinggi), disimpan ke category_winners. */
-    public function saveCategoryWinners(string $eventId): void
+    /**
+     * Assign ranks so that the highest value gets rank 1.
+     * Ties receive the same rank (standard competition ranking).
+     */
+    private static function rankDescending(array $values): array
     {
-        $categories = DB::table('categories')->where('event_id', $eventId)->get();
+        $m = count($values);
+        $rank = array_fill(0, $m, 1);
 
-        foreach ($categories as $cat) {
-            $best = DB::table('votes as v')
-                ->join('ratings as r', 'r.vote_id', '=', 'v.id')
-                ->where('v.event_id', $eventId)
-                ->where('r.category_id', $cat->id)
-                ->groupBy('v.candidate_id')
-                ->select('v.candidate_id', DB::raw('AVG(r.score) as avg_score'))
-                ->orderByDesc('avg_score')
-                ->first();
-
-            if (!$best) continue;
-
-            DB::table('category_winners')
-                ->where('event_id', $eventId)
-                ->where('category_id', $cat->id)
-                ->delete();
-
-            DB::table('category_winners')->insert([
-                'id'           => (string) \Illuminate\Support\Str::uuid(),
-                'event_id'     => $eventId,
-                'category_id'  => $cat->id,
-                'candidate_id' => $best->candidate_id,
-                'total_points' => round((float) $best->avg_score, 2),
-                'created_at'   => now(),
-                'updated_at'   => now(),
-            ]);
+        for ($i = 0; $i < $m; $i++) {
+            for ($j = 0; $j < $m; $j++) {
+                if ($values[$j] > $values[$i]) {
+                    $rank[$i]++;
+                }
+            }
         }
+
+        return $rank;
+    }
+
+    private static function emptyResult(int $n): array
+    {
+        return [
+            'closeness'  => [],
+            'rank'       => [],
+            'dPlus'      => [],
+            'dMinus'     => [],
+            'normalized' => [],
+            'weighted'   => [],
+            'idealPlus'  => array_fill(0, $n, 0.0),
+            'idealMinus' => array_fill(0, $n, 0.0),
+        ];
     }
 }
