@@ -270,27 +270,36 @@
                                 <div class="card-number">NO. {{ $candidate->number }}</div>
 
                                 @php
-                                    $photoPath = $candidate->photo
-                                        ? storage_path('app/public/candidates/' . $candidate->photo)
-                                        : null;
-                                    $photoBase64 = null;
-                                    if ($photoPath && file_exists($photoPath)) {
-                                        $ext  = strtolower(pathinfo($candidate->photo, PATHINFO_EXTENSION));
-                                        $mime = $ext === 'png' ? 'image/png' : 'image/jpeg';
-                                        $photoBase64 = 'data:' . $mime . ';base64,' . base64_encode(file_get_contents($photoPath));
-                                    }
+    // Ambil field photo_url (bukan photo)
+    $photoPath = $candidate->photo_url
+        ? storage_path('app/public/candidates/' . $candidate->photo_url)
+        : null;
+    
+    $photoBase64 = null;
+    if ($photoPath && file_exists($photoPath)) {
+        $ext  = strtolower(pathinfo($candidate->photo_url, PATHINFO_EXTENSION));
+        
+        // Tentukan MIME type gambar
+        $mime = 'image/jpeg';
+        if ($ext === 'png') {
+            $mime = 'image/png';
+        } elseif ($ext === 'webp') {
+            $mime = 'image/webp';
+        }
 
-                                    // Inisial dipakai sebagai foto profil sementara
-                                    // selama kandidat belum mengunggah foto.
-                                    $nameParts = preg_split('/\s+/', trim($candidate->name));
-                                    $initials  = strtoupper(
-                                        mb_substr($nameParts[0] ?? '', 0, 1) .
-                                        mb_substr($nameParts[1] ?? '', 0, 1)
-                                    );
-                                    if ($initials === '') {
-                                        $initials = '?';
-                                    }
-                                @endphp
+        $photoBase64 = 'data:' . $mime . ';base64,' . base64_encode(file_get_contents($photoPath));
+    }
+
+    // Inisial jika tidak ada foto
+    $nameParts = preg_split('/\s+/', trim($candidate->name));
+    $initials  = strtoupper(
+        mb_substr($nameParts[0] ?? '', 0, 1) .
+        mb_substr($nameParts[1] ?? '', 0, 1)
+    );
+    if ($initials === '') {
+        $initials = '?';
+    }
+@endphp
 
                                 @if($photoBase64)
                                     <div class="card-photo-frame">
