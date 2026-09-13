@@ -7,6 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="{{ asset('css/style.css') }}">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.5.13/cropper.min.css">
 </head>
 <body>
 
@@ -94,7 +95,7 @@
             <!-- Buttons -->
             <div class="flex gap-3 mt-6">
               <a href="{{ route('admin.event', $candidate->event_id) }}" class="btn btn--secondary flex-1">Batal</a>
-              <button type="submit" class="btn btn--primary flex-1">
+              <button type="submit" id="submit-btn" class="btn btn--primary flex-1">
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
                 Simpan Perubahan
               </button>
@@ -144,7 +145,97 @@
     </a>
   </nav>
 
+  <!-- Modal Crop Gambar -->
+  <div id="crop-modal" style="display:none; position:fixed; inset:0; z-index:9999; align-items:center; justify-content:center; padding:var(--space-4); background:rgba(0,0,0,0.6); backdrop-filter:blur(4px);">
+    <div style="background:#ffffff; border-radius:var(--radius-2xl); max-width:500px; width:100%; padding:var(--space-6); box-shadow:0 20px 60px rgba(0,0,0,0.3);">
+      <h3 style="font-size:var(--font-size-lg); font-weight:700; margin-bottom:var(--space-3); color:#111827;">Sesuaikan Foto Kandidat</h3>
+      <p style="color:#4b5563; font-size:var(--font-size-sm); margin-bottom:var(--space-4);">Geser atau ubah ukuran kotak agar foto sesuai dengan rasio 1:1.</p>
+      
+      <div style="max-height: 350px; overflow: hidden; background: #000; border-radius: var(--radius-lg);">
+        <img id="image-to-crop" style="max-width: 100%; display: block;" />
+      </div>
+
+      <div style="display: flex; gap: var(--space-3); margin-top: var(--space-5);">
+        <button type="button" onclick="cancelCrop()" class="btn btn--secondary" style="flex:1;">Batal</button>
+        <button type="button" onclick="getCroppedImage()" class="btn btn--primary" style="flex:1;">Potong & Gunakan</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.5.13/cropper.min.js"></script>
+
   <script>
+    let cropper = null;
+    const inputPhoto = document.getElementById('candidate-photo-input');
+    const imageToCrop = document.getElementById('image-to-crop');
+    const cropModal = document.getElementById('crop-modal');
+    
+    // Rasio diatur menjadi 1:1 (persegi/kotak)
+    const aspectRatioValue = 1 / 1; 
+
+    function previewPhoto(input) {
+      if (input.files && input.files[0]) {
+        const reader = new FileReader();
+        reader.onload = function(e) {
+          imageToCrop.src = e.target.result;
+          cropModal.style.display = 'flex';
+          document.body.style.overflow = 'hidden';
+
+          if (cropper) {
+            cropper.destroy();
+          }
+
+          cropper = new Cropper(imageToCrop, {
+            aspectRatio: aspectRatioValue,
+            viewMode: 1,
+            autoCropArea: 1,
+            responsive: true,
+          });
+        };
+        reader.readAsDataURL(input.files[0]);
+      }
+    }
+
+    function cancelCrop() {
+      cropModal.style.display = 'none';
+      document.body.style.overflow = '';
+      if (cropper) {
+        cropper.destroy();
+        cropper = null;
+      }
+      inputPhoto.value = ''; // Reset input file jika dibatalkan
+    }
+
+    function getCroppedImage() {
+      if (!cropper) return;
+
+      // Output ukuran canvas 1:1 (persegi)
+      cropper.getCroppedCanvas({
+        width: 600,
+        height: 600,
+      }).toBlob(function(blob) {
+        const fileName = inputPhoto.files[0] ? inputPhoto.files[0].name : 'candidate-photo.jpg';
+        const croppedFile = new File([blob], fileName, { type: 'image/jpeg' });
+
+        const dataTransfer = new DataTransfer();
+        dataTransfer.items.add(croppedFile);
+        inputPhoto.files = dataTransfer.files;
+
+        // Update preview card secara real-time menggunakan hasil crop
+        const preview = document.getElementById('preview-photo');
+        const reader = new FileReader();
+        reader.onload = function(e) {
+          preview.innerHTML = '<img src="' + e.target.result + '" style="width:100%;height:100%;object-fit:cover;">';
+        };
+        reader.readAsDataURL(croppedFile);
+
+        cropModal.style.display = 'none';
+        document.body.style.overflow = '';
+        cropper.destroy();
+        cropper = null;
+      }, 'image/jpeg');
+    }
+
     function toggleTheme() {
       const html = document.documentElement;
       const current = html.getAttribute('data-theme');
@@ -153,17 +244,6 @@
     }
     const saved = localStorage.getItem('theme');
     if (saved) document.documentElement.setAttribute('data-theme', saved);
-
-    function previewPhoto(input) {
-      const preview = document.getElementById('preview-photo');
-      if (input.files && input.files[0]) {
-        const reader = new FileReader();
-        reader.onload = function(e) {
-          preview.innerHTML = '<img src="' + e.target.result + '" style="width:100%;height:100%;object-fit:cover;">';
-        };
-        reader.readAsDataURL(input.files[0]);
-      }
-    }
 
     function updatePreview() {
       const name = document.getElementById('candidate-name').value || 'Nama Kandidat';
@@ -184,11 +264,17 @@
       window.location.href = `/event/{{ $event->id }}/download-candidates-pdf`;
     }
 
-document.querySelector('form').addEventListener('submit', function() {
-    const btn = document.getElementById('submit-btn');
-    btn.innerHTML = 'Menyimpan...';
-    btn.disabled = true;
-});
+    const formElement = document.querySelector('form');
+    if (formElement) {
+      formElement.addEventListener('submit', function() {
+        const btn = document.getElementById('submit-btn');
+        if (btn) {
+          btn.innerHTML = 'Menyimpan...';
+          btn.disabled = true;
+        }
+      });
+    }
   </script>
+
 </body>
 </html>

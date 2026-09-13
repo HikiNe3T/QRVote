@@ -161,7 +161,7 @@
   <!-- Modal Notifikasi: Scan Kandidat diblokir -->
   <div id="scan-block-modal" style="display:none; position:fixed; inset:0; z-index:9999; align-items:center; justify-content:center; padding:var(--space-4); background:rgba(0,0,0,0.6); backdrop-filter:blur(4px);">
     <div style="background:#ffffff; border-radius:var(--radius-2xl); max-width:400px; width:100%; padding:var(--space-6); text-align:center; box-shadow:0 20px 60px rgba(0,0,0,0.3); animation:modalIn 0.25s ease;">
-      
+
       <!-- Icon Container -->
       <div style="width:64px; height:64px; border-radius:50%; margin:0 auto var(--space-4); display:flex; align-items:center; justify-content:center;
         @if($status === 'upcoming') background:#fef3c7; color:#d97706; @else background:#fee2e2; color:#dc2626; @endif">

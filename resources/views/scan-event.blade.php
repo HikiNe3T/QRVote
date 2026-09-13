@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <meta name="csrf-token" content="{{ csrf_token() }}">
-  <title>Scan QR Event - VoteQR</title>
+  <title>Scan QR Event - VoteQR (OpenCV Enhanced)</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="{{ asset('css/style.css') }}">
@@ -116,7 +116,7 @@
     </div>
 
     <div class="scan-text">Scan QR Code Event</div>
-    <div class="scan-hint">Arahkan kamera ke kode QR event</div>
+    <div class="scan-hint" id="status-hint">Menginisialisasi Engine OpenCV...</div>
   </div>
 
   <div class="import-overlay">
@@ -146,14 +146,26 @@
   </form>
 
   <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+  <!-- Load OpenCV.js asynchronously -->
+  <script async src="https://docs.opencv.org/4.7.0/opencv.js" onload="onOpenCvReady();" type="text/javascript"></script>
+
   <script>
     const saved = localStorage.getItem('theme');
     if (saved) document.documentElement.setAttribute('data-theme', saved);
 
     let stream = null, scanning = false, rafId = null, submitted = false, flashOn = false;
+    let isOpenCvReady = false;
+    
     const video  = document.getElementById('camera-video');
     const canvas = document.createElement('canvas');
     const ctx    = canvas.getContext('2d', { willReadFrequently: true });
+    const statusHint = document.getElementById('status-hint');
+
+    // Callback saat OpenCV.js selesai di-load
+    function onOpenCvReady() {
+      isOpenCvReady = true;
+      if (statusHint) statusHint.textContent = 'Arahkan kamera ke kode QR event';
+    }
 
     async function startCamera() {
       if (!navigator.mediaDevices?.getUserMedia) return;
@@ -167,6 +179,7 @@
         tick();
       } catch (e) {
         console.warn('Kamera tidak tersedia:', e.name);
+        if (statusHint) statusHint.textContent = 'Kamera tidak tersedia, silakan gunakan Import QR';
       }
     }
 
@@ -176,11 +189,76 @@
         canvas.width  = video.videoWidth;
         canvas.height = video.videoHeight;
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-        const data = ctx.getImageData(0, 0, canvas.width, canvas.height);
-        const code = jsQR(data.data, canvas.width, canvas.height, { inversionAttempts: 'dontInvert' });
-        if (code && code.data) { onQrDetected(code.data); return; }
+        
+        let rawData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        
+        // 1. Coba Scan Frame Asli Terlebih Dahulu
+        let code = jsQR(rawData.data, canvas.width, canvas.height, { inversionAttempts: 'dontInvert' });
+
+        // 2. Jika gagal dan OpenCV sudah siap, gunakan Algoritma Pengolahan Citra
+        if (!code && isOpenCvReady) {
+          code = processFrameWithOpenCV(canvas);
+        }
+
+        if (code && code.data) { 
+          onQrDetected(code.data); 
+          return; 
+        }
       }
       rafId = requestAnimationFrame(tick);
+    }
+
+    /**
+     * Pipeline Pengolahan Citra OpenCV (Grayscale -> Adaptive Threshold -> Canny Edge)
+     */
+    function processFrameWithOpenCV(sourceCanvas) {
+      let src = cv.imread(sourceCanvas);
+      let gray = new cv.Mat();
+      let thresh = new cv.Mat();
+      let edges = new cv.Mat();
+
+      try {
+        // A. Convert ke Grayscale
+        cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0);
+
+        // B. Adaptive Thresholding (mengatasi pencahayaan gelap/terang & bayangan)
+        cv.adaptiveThreshold(gray, thresh, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, 11, 2);
+
+        // Coba decode hasil Binarization
+        let imageData = matToImageData(thresh);
+        let code = jsQR(imageData.data, imageData.width, imageData.height, { inversionAttempts: 'dontInvert' });
+
+        // C. Jika belum ketemu, terapkan Canny Edge Detection (Deteksi Kontur Tepi)
+        if (!code) {
+          cv.Canny(gray, edges, 100, 200, 3, false);
+          imageData = matToImageData(edges);
+          code = jsQR(imageData.data, imageData.width, imageData.height, { inversionAttempts: 'dontInvert' });
+        }
+
+        return code;
+      } catch (err) {
+        console.error('OpenCV Processing Error:', err);
+        return null;
+      } finally {
+        // Bebaskan Memory WebAssembly OpenCV
+        src.delete();
+        gray.delete();
+        thresh.delete();
+        edges.delete();
+      }
+    }
+
+    // Helper Convert cv.Mat ke ImageData untuk jsQR
+    function matToImageData(mat) {
+      const img = new cv.Mat();
+      if (mat.channels() === 1) {
+        cv.cvtColor(mat, img, cv.COLOR_GRAY2RGBA);
+      } else {
+        img.assign(mat);
+      }
+      const imgData = new ImageData(new Uint8ClampedArray(img.data), img.cols, img.rows);
+      img.delete();
+      return imgData;
     }
 
     function stopCamera() {
@@ -211,7 +289,7 @@
     function handleQrImport(event) {
       const file = event.target.files[0];
       if (!file) return;
-      showResult('loading', 'Memproses QR...', 'Mengidentifikasi kode QR');
+      showResult('loading', 'Memproses QR...', 'Mengidentifikasi kode QR dengan OpenCV');
       const reader = new FileReader();
       reader.onload = e => {
         const img = new Image();
@@ -233,7 +311,15 @@
       }
       c.width = w; c.height = h;
       cc.drawImage(img, 0, 0, w, h);
-      const code = jsQR(cc.getImageData(0, 0, w, h).data, w, h, { inversionAttempts: 'attemptBoth' });
+
+      // Raw Image Decode
+      let rawData = cc.getImageData(0, 0, w, h);
+      let code = jsQR(rawData.data, w, h, { inversionAttempts: 'attemptBoth' });
+
+      // OpenCV Enhanced Decode jika raw gagal
+      if (!code && isOpenCvReady) {
+        code = processFrameWithOpenCV(c);
+      }
 
       if (code && code.data) onQrDetected(code.data);
       else showResult('error', 'QR Tidak Ditemukan', 'Gambar tidak berisi kode QR yang valid.', true);

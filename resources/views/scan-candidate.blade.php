@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <meta name="csrf-token" content="{{ csrf_token() }}">
-  <title>Scan QR Kandidat - VoteQR</title>
+  <title>Scan QR Kandidat - VoteQR (OpenCV Enhanced)</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="{{ asset('css/style.css') }}">
@@ -113,11 +113,13 @@
       <div class="scan-header__btn" style="background:transparent;width:auto;padding:0 var(--space-3);">
         <span style="font-size:var(--font-size-sm);font-weight:500;">{{ $event->name }}</span>
       </div>
-      <div style="width:40px;"></div>
+      <button class="scan-header__btn" onclick="toggleFlash()" id="flash-btn" title="Flashlight">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 14c.2-1 .7-1.7 1.5-2.5 1-.9 1.5-2.2 1.5-3.5A6 6 0 0 0 6 8c0 1 .2 2.2 1.5 3.5.7.7 1.3 1.5 1.5 2.5"/><path d="M9 18h6"/><path d="M10 22h4"/></svg>
+      </button>
     </div>
 
     <div class="scan-text">Scan QR Kandidat</div>
-    <div class="scan-hint">Arahkan kamera ke kode QR kandidat</div>
+    <div class="scan-hint" id="status-hint">Menginisialisasi Engine OpenCV...</div>
   </div>
 
   <div class="import-overlay">
@@ -148,17 +150,29 @@
   </form>
 
   <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+  <!-- Load OpenCV.js secara asinkron -->
+  <script async src="https://docs.opencv.org/4.7.0/opencv.js" onload="onOpenCvReady();" type="text/javascript"></script>
+
   <script>
     const saved = localStorage.getItem('theme');
     if (saved) document.documentElement.setAttribute('data-theme', saved);
 
-    let stream = null, scanning = false, rafId = null, submitted = false;
+    let stream = null, scanning = false, rafId = null, submitted = false, flashOn = false;
+    let isOpenCvReady = false;
+
     const video  = document.getElementById('camera-video');
     const canvas = document.createElement('canvas');
     const ctx    = canvas.getContext('2d', { willReadFrequently: true });
+    const statusHint = document.getElementById('status-hint');
+
+    // Callback saat runtime WebAssembly OpenCV siap
+    function onOpenCvReady() {
+      isOpenCvReady = true;
+      if (statusHint) statusHint.textContent = 'Arahkan kamera ke kode QR kandidat';
+    }
 
     async function startCamera() {
-      if (!navigator.mediaDevices?.getUserMedia) return; // fallback: import file
+      if (!navigator.mediaDevices?.getUserMedia) return;
       try {
         stream = await navigator.mediaDevices.getUserMedia({
           video: { facingMode: { ideal: 'environment' } }, audio: false
@@ -169,6 +183,7 @@
         tick();
       } catch (e) {
         console.warn('Kamera tidak tersedia:', e.name);
+        if (statusHint) statusHint.textContent = 'Kamera tidak tersedia, silakan gunakan Import QR';
       }
     }
 
@@ -178,11 +193,75 @@
         canvas.width  = video.videoWidth;
         canvas.height = video.videoHeight;
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-        const data = ctx.getImageData(0, 0, canvas.width, canvas.height);
-        const code = jsQR(data.data, canvas.width, canvas.height, { inversionAttempts: 'dontInvert' });
-        if (code && code.data) { onQrDetected(code.data); return; }
+        
+        const rawData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+
+        // 1. Uji dekode frame asli tanpa pengolahan tambahan
+        let code = jsQR(rawData.data, canvas.width, canvas.height, { inversionAttempts: 'dontInvert' });
+
+        // 2. Jika frame asli gagal & OpenCV siap, jalankan Pipeline Citra (Grayscale -> Adaptive Threshold -> Canny)
+        if (!code && isOpenCvReady) {
+          code = processFrameWithOpenCV(canvas);
+        }
+
+        if (code && code.data) { 
+          onQrDetected(code.data); 
+          return; 
+        }
       }
       rafId = requestAnimationFrame(tick);
+    }
+
+    /**
+     * Processing pipeline menggunakan OpenCV: Grayscale, Adaptive Threshold, & Canny Edge Detection
+     */
+    function processFrameWithOpenCV(sourceCanvas) {
+      let src = cv.imread(sourceCanvas);
+      let gray = new cv.Mat();
+      let thresh = new cv.Mat();
+      let edges = new cv.Mat();
+
+      try {
+        // Step 1: Grayscale Conversion
+        cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0);
+
+        // Step 2: Adaptive Gaussian Thresholding (mengatasi bayangan dan kilatan cahaya)
+        cv.adaptiveThreshold(gray, thresh, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, 11, 2);
+
+        let imageData = matToImageData(thresh);
+        let code = jsQR(imageData.data, imageData.width, imageData.height, { inversionAttempts: 'dontInvert' });
+
+        // Step 3: Canny Edge Detection (Fallback jika thresholding masih belum cukup tebal)
+        if (!code) {
+          cv.Canny(gray, edges, 100, 200, 3, false);
+          imageData = matToImageData(edges);
+          code = jsQR(imageData.data, imageData.width, imageData.height, { inversionAttempts: 'dontInvert' });
+        }
+
+        return code;
+      } catch (err) {
+        console.error('OpenCV Processing Error:', err);
+        return null;
+      } finally {
+        // Penting: Hapus pointer memori WebAssembly agar tidak memory leak
+        src.delete();
+        gray.delete();
+        thresh.delete();
+        edges.delete();
+      }
+    }
+
+    // Helper mengubah cv.Mat ke format ImageData untuk jsQR
+    function matToImageData(mat) {
+      const img = new cv.Mat();
+      if (mat.channels() === 1) {
+        cv.cvtColor(mat, img, cv.COLOR_GRAY2RGBA);
+      } else {
+        img.assign(mat);
+      }
+      const imgData = new ImageData(new Uint8ClampedArray(img.data), img.cols, img.rows);
+      img.delete();
+      return imgData;
     }
 
     function stopCamera() {
@@ -200,11 +279,20 @@
       setTimeout(() => document.getElementById('scan-form').submit(), 700);
     }
 
+    function toggleFlash() {
+      if (!stream) return;
+      const track = stream.getVideoTracks()[0];
+      const caps = track.getCapabilities?.();
+      if (!caps || !('torch' in caps)) return;
+      flashOn = !flashOn;
+      track.applyConstraints({ advanced: [{ torch: flashOn }] }).catch(() => {});
+    }
+
     /* ---- Import file gambar QR ---- */
     function handleQrImport(event) {
       const file = event.target.files[0];
       if (!file) return;
-      showResult('loading', 'Memproses QR...', 'Mengidentifikasi kode QR');
+      showResult('loading', 'Memproses QR...', 'Mengidentifikasi kode QR dengan OpenCV');
       const reader = new FileReader();
       reader.onload = e => {
         const img = new Image();
@@ -226,7 +314,15 @@
       }
       c.width = w; c.height = h;
       cc.drawImage(img, 0, 0, w, h);
-      const code = jsQR(cc.getImageData(0, 0, w, h).data, w, h, { inversionAttempts: 'attemptBoth' });
+
+      // Raw Image Decode
+      let rawData = cc.getImageData(0, 0, w, h);
+      let code = jsQR(rawData.data, w, h, { inversionAttempts: 'attemptBoth' });
+
+      // Fallback ke OpenCV jika gambar mentah gagal
+      if (!code && isOpenCvReady) {
+        code = processFrameWithOpenCV(c);
+      }
 
       if (code && code.data) onQrDetected(code.data);
       else showResult('error', 'QR Tidak Ditemukan', 'Gambar tidak berisi kode QR yang valid.', true);
